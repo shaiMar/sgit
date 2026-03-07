@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as path from 'path';
+import * as os from 'os';
+import * as fs from 'fs';
 
 // ─── Data types ───────────────────────────────────────────────────────────────
 
@@ -13,334 +15,53 @@ interface FileStatus {
 
 type GroupKind = 'staged' | 'changes' | 'message' | 'repo';
 
-// ─── Diff parsing ─────────────────────────────────────────────────────────────
+// ─── Beyond Compare launcher ──────────────────────────────────────────────────
 
-interface DiffRow {
-  kind: 'context' | 'removed' | 'added' | 'empty' | 'hunk';
-  lineNum: number | null;
-  text: string;
+const BC_CANDIDATES = [
+  '/usr/local/bin/bcomp',
+  '/usr/bin/bcomp',
+  '/Applications/Beyond Compare.app/Contents/MacOS/bcomp',
+  '/Applications/Beyond Compare 5.app/Contents/MacOS/bcomp',
+  '/Applications/Beyond Compare 4.app/Contents/MacOS/bcomp',
+];
+
+function findBeyondCompare(): string | null {
+  for (const p of BC_CANDIDATES) {
+    if (fs.existsSync(p)) { return p; }
+  }
+  return null;
 }
 
-interface SideBySideRow {
-  left:  DiffRow;
-  right: DiffRow;
-}
-
-function parseDiff(diff: string): SideBySideRow[] {
-  const result: SideBySideRow[] = [];
-  const lines = diff.split('\n');
-  let i = 0;
-  let ln = 1, rn = 1;
-
-  // Skip file header lines (---, +++) — jump to first hunk
-  while (i < lines.length && !lines[i].startsWith('@@')) { i++; }
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // Hunk header ─────────────────────────────────────────────────────────
-    if (line.startsWith('@@')) {
-      const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)/);
-      if (m) {
-        ln = parseInt(m[1]);
-        rn = parseInt(m[3]);
-        result.push({
-          left:  { kind: 'hunk', lineNum: null, text: line },
-          right: { kind: 'hunk', lineNum: null, text: line },
-        });
-      }
-      i++; continue;
-    }
-
-    // Collect a block of adjacent -/+ lines, then pair them side-by-side ──
-    const removed: string[] = [];
-    const added:   string[] = [];
-
-    while (i < lines.length && (lines[i][0] === '-' || lines[i][0] === '+')) {
-      if (lines[i][0] === '-') { removed.push(lines[i].slice(1)); }
-      else                      { added.push(lines[i].slice(1)); }
-      i++;
-    }
-
-    if (removed.length || added.length) {
-      const n = Math.max(removed.length, added.length);
-      for (let j = 0; j < n; j++) {
-        const hasL = j < removed.length;
-        const hasR = j < added.length;
-        result.push({
-          left:  hasL ? { kind: 'removed', lineNum: ln++, text: removed[j] }
-                      : { kind: 'empty',   lineNum: null,  text: '' },
-          right: hasR ? { kind: 'added',   lineNum: rn++, text: added[j] }
-                      : { kind: 'empty',   lineNum: null,  text: '' },
-        });
-      }
-      continue;
-    }
-
-    // Context line ─────────────────────────────────────────────────────────
-    if (line[0] === ' ') {
-      const text = line.slice(1);
-      result.push({
-        left:  { kind: 'context', lineNum: ln++, text },
-        right: { kind: 'context', lineNum: rn++, text },
-      });
-    }
-
-    i++;
-  }
-
-  return result;
-}
-
-// ─── HTML generation ──────────────────────────────────────────────────────────
-
-function esc(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\t/g, '    ');
-}
-
-function rowHtml(row: DiffRow): string {
-  const ln   = row.lineNum !== null ? String(row.lineNum) : '';
-  const code = esc(row.text);
-  return `<div class="row ${row.kind}"><span class="ln">${ln}</span><span class="code">${code}</span></div>`;
-}
-
-function buildHtml(filepath: string, rows: SideBySideRow[], xy: string): string {
-  const leftHtml  = rows.map(r => rowHtml(r.left)).join('');
-  const rightHtml = rows.map(r => rowHtml(r.right)).join('');
-  const rightLabel = (xy[0] !== ' ' && xy[0] !== '?') ? 'Index (Staged)' : 'Working Tree';
-  const fname = esc(filepath);
-
-  return /* html */`<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
-<style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  body {
-    background: var(--vscode-editor-background);
-    color: var(--vscode-editor-foreground);
-    font-family: var(--vscode-editor-font-family, 'Menlo', 'Courier New', monospace);
-    font-size: var(--vscode-editor-font-size, 13px);
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  /* ── Header ───────────────────────────────────────────────────── */
-  #top-bar {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    background: var(--vscode-editorGroupHeader-tabsBackground);
-    border-bottom: 1px solid var(--vscode-editorGroup-border);
-    flex-shrink: 0;
-  }
-  .top-label {
-    padding: 5px 14px;
-    font-size: 11px;
-    color: var(--vscode-tab-inactiveForeground);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .top-label:last-child { border-left: 1px solid var(--vscode-editorGroup-border); }
-  .top-label strong { color: var(--vscode-editor-foreground); }
-
-  /* ── Diff layout ──────────────────────────────────────────────── */
-  #diff-wrapper {
-    flex: 1;
-    display: grid;
-    grid-template-columns: 1fr 1px 1fr;
-    overflow: hidden;
-  }
-  #divider { background: var(--vscode-editorGroup-border); }
-
-  .pane {
-    overflow-y: scroll;
-    overflow-x: auto;
-  }
-
-  /* ── Rows ─────────────────────────────────────────────────────── */
-  .row {
-    display: flex;
-    min-height: 19px;
-    line-height: 19px;
-  }
-
-  .ln {
-    min-width: 52px;
-    text-align: right;
-    padding-right: 12px;
-    padding-left: 4px;
-    color: var(--vscode-editorLineNumber-foreground);
-    border-right: 1px solid var(--vscode-editorGroup-border);
-    user-select: none;
-    flex-shrink: 0;
-    font-size: 11px;
-    line-height: 19px;
-  }
-
-  .code {
-    padding-left: 12px;
-    white-space: pre;
-    flex: 1;
-  }
-
-  /* context — no highlight */
-  .row.context {}
-
-  /* removed (left side) */
-  .row.removed {
-    background: var(--vscode-diffEditor-removedLineBackground, rgba(255, 0, 0, 0.12));
-  }
-  .row.removed .ln   { color: #f14c4c; }
-  .row.removed .code { color: var(--vscode-diffEditor-removedTextForeground, #f14c4c); }
-
-  /* added (right side) */
-  .row.added {
-    background: var(--vscode-diffEditor-insertedLineBackground, rgba(0, 255, 0, 0.08));
-  }
-  .row.added .ln   { color: #23d18b; }
-  .row.added .code { color: var(--vscode-diffEditor-insertedTextForeground, #23d18b); }
-
-  /* empty placeholder (keeps rows aligned) */
-  .row.empty {
-    background: var(--vscode-editor-background);
-    opacity: 0.35;
-  }
-  .row.empty .code::before { content: ''; }
-
-  /* hunk header */
-  .row.hunk {
-    background: var(--vscode-editorGroupHeader-tabsBackground);
-    border-top: 1px solid var(--vscode-editorGroup-border);
-    border-bottom: 1px solid var(--vscode-editorGroup-border);
-  }
-  .row.hunk .ln   { color: var(--vscode-tab-inactiveForeground); }
-  .row.hunk .code {
-    color: var(--vscode-tab-inactiveForeground);
-    font-style: italic;
-    font-size: 11px;
-  }
-</style>
-</head>
-<body>
-
-<div id="top-bar">
-  <div class="top-label">&#8592; <strong>HEAD</strong> &nbsp;${fname}</div>
-  <div class="top-label">&#8594; <strong>${rightLabel}</strong> &nbsp;${fname}</div>
-</div>
-
-<div id="diff-wrapper">
-  <div class="pane" id="pane-left">${leftHtml}</div>
-  <div id="divider"></div>
-  <div class="pane" id="pane-right">${rightHtml}</div>
-</div>
-
-<script>
-  const L = document.getElementById('pane-left');
-  const R = document.getElementById('pane-right');
-  let lock = false;
-  L.addEventListener('scroll', () => { if (!lock) { lock = true; R.scrollTop = L.scrollTop; R.scrollLeft = L.scrollLeft; lock = false; } });
-  R.addEventListener('scroll', () => { if (!lock) { lock = true; L.scrollTop = R.scrollTop; L.scrollLeft = R.scrollLeft; lock = false; } });
-</script>
-
-</body>
-</html>`;
-}
-
-// ─── DiffPanel (DP) ───────────────────────────────────────────────────────────
-
-class DiffPanel {
-  static current?: DiffPanel;
-
-  private readonly _panel: vscode.WebviewPanel;
-  private readonly _disposables: vscode.Disposable[] = [];
-
-  static async createOrShow(status: FileStatus): Promise<void> {
-    if (DiffPanel.current) {
-      DiffPanel.current._panel.reveal(vscode.ViewColumn.One);
-      await DiffPanel.current._render(status);
-      return;
-    }
-
-    const panel = vscode.window.createWebviewPanel(
-      'sgitDiffPanel',
-      'SGit Diff',
-      vscode.ViewColumn.One,
-      { enableScripts: true, retainContextWhenHidden: true }
+async function openInBeyondCompare(status: FileStatus): Promise<void> {
+  const bcomp = findBeyondCompare();
+  if (!bcomp) {
+    vscode.window.showErrorMessage(
+      'Beyond Compare not found. Install it and make sure `bcomp` is available at one of: ' +
+      BC_CANDIDATES.join(', ')
     );
-
-    DiffPanel.current = new DiffPanel(panel);
-    await DiffPanel.current._render(status);
+    return;
   }
 
-  private constructor(panel: vscode.WebviewPanel) {
-    this._panel = panel;
-    panel.onDidDispose(() => {
-      DiffPanel.current = undefined;
-      this._disposables.forEach(d => d.dispose());
-    }, null, this._disposables);
-  }
+  const { xy, filepath, repoRoot } = status;
+  const filename  = path.basename(filepath);
+  const isStaged  = xy[0] !== ' ' && xy[0] !== '?';
+  const workingFile = path.join(repoRoot, filepath);
 
-  private async _render(status: FileStatus): Promise<void> {
-    const { xy, filepath, repoRoot } = status;
-    const filename = path.basename(filepath);
+  // Save HEAD content to a temp file so Beyond Compare can open it
+  const headContent = await gitShow(repoRoot, isStaged ? `:${filepath}` : `HEAD:${filepath}`);
+  const tmpFile     = path.join(os.tmpdir(), `sgit_HEAD_${filename}`);
+  fs.writeFileSync(tmpFile, headContent);
 
-    this._panel.title = `${filename}: HEAD ↔ ${xy[0] !== ' ' && xy[0] !== '?' ? 'Staged' : 'Working Tree'}`;
-
-    try {
-      const diffCmd = (xy[0] !== ' ' && xy[0] !== '?')
-        ? `git diff --cached HEAD -- "${filepath}"`   // staged
-        : `git diff HEAD -- "${filepath}"`;            // unstaged
-
-      const diffOut = await run(diffCmd, repoRoot);
-
-      if (!diffOut.trim()) {
-        this._panel.webview.html = this._emptyHtml(filename);
-        return;
-      }
-
-      const rows = parseDiff(diffOut);
-      this._panel.webview.html = buildHtml(filepath, rows, xy);
-    } catch (err) {
-      this._panel.webview.html = this._errorHtml(String(err));
-    }
-  }
-
-  private _emptyHtml(filename: string): string {
-    return `<!DOCTYPE html><html><body style="display:flex;align-items:center;justify-content:center;height:100vh;
-      font-family:sans-serif;color:var(--vscode-editor-foreground);background:var(--vscode-editor-background)">
-      <p>No changes detected in <strong>${esc(filename)}</strong></p></body></html>`;
-  }
-
-  private _errorHtml(msg: string): string {
-    return `<!DOCTYPE html><html><body style="display:flex;align-items:center;justify-content:center;height:100vh;
-      font-family:sans-serif;color:#f14c4c;background:var(--vscode-editor-background)">
-      <p>Error: ${esc(msg)}</p></body></html>`;
-  }
+  // Beyond Compare: left = HEAD (or index), right = working tree
+  cp.spawn(bcomp, [tmpFile, workingFile], { detached: true, stdio: 'ignore' }).unref();
 }
 
-// ─── Shell helper ─────────────────────────────────────────────────────────────
-
-function run(cmd: string, cwd: string): Promise<string> {
+function gitShow(repoRoot: string, ref: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    cp.exec(cmd, { cwd, maxBuffer: 20 * 1024 * 1024 }, (err, out) => {
-      if (err) { reject(err); } else { resolve(out); }
-    });
+    cp.exec(`git show "${ref}"`, { cwd: repoRoot, maxBuffer: 20 * 1024 * 1024 }, (err, out) =>
+      err ? reject(err) : resolve(out)
+    );
   });
-}
-
-// ─── Open diff ────────────────────────────────────────────────────────────────
-
-async function openDiff(status: FileStatus): Promise<void> {
-  await DiffPanel.createOrShow(status);
 }
 
 // ─── Tree item ────────────────────────────────────────────────────────────────
@@ -408,9 +129,7 @@ class SGitProvider implements vscode.TreeDataProvider<SGitItem> {
   private async buildRepoNode(repoRoot: string): Promise<SGitItem> {
     const groups       = await this.buildGroupsForRepo(repoRoot);
     const totalChanges = groups.reduce((n, g) => n + (g.children?.length ?? 0), 0);
-    const repoName     = path.basename(repoRoot);
-
-    return new SGitItem(repoName, vscode.TreeItemCollapsibleState.Expanded, 'repo', {
+    return new SGitItem(path.basename(repoRoot), vscode.TreeItemCollapsibleState.Expanded, 'repo', {
       icon: 'repo',
       description: totalChanges ? `${totalChanges} change${totalChanges !== 1 ? 's' : ''}` : 'clean',
       children: groups.length ? groups : [SGitItem.message('No changes', 'check')],
@@ -420,7 +139,6 @@ class SGitProvider implements vscode.TreeDataProvider<SGitItem> {
   private async buildGroupsForRepo(repoRoot: string): Promise<SGitItem[]> {
     const changes = await this.getStatus(repoRoot);
     const tracked = changes.filter(c => c.xy !== '??' && c.xy !== '!!');
-
     if (tracked.length === 0) { return [SGitItem.message('No changes', 'check')]; }
 
     const staged   = tracked.filter(c => c.xy[0] !== ' ');
@@ -429,36 +147,29 @@ class SGitProvider implements vscode.TreeDataProvider<SGitItem> {
 
     if (staged.length)   { groups.push(this.buildGroup('Staged Changes', staged,   repoRoot, 'staged',  'pass')); }
     if (unstaged.length) { groups.push(this.buildGroup('Changes',        unstaged, repoRoot, 'changes', 'edit')); }
-
     return groups;
   }
 
   private buildGroup(title: string, statuses: FileStatus[], repoRoot: string, kind: GroupKind, icon: string): SGitItem {
-    const children = statuses.map(s => this.buildFileItem(s, repoRoot));
     return new SGitItem(title, vscode.TreeItemCollapsibleState.Expanded, kind, {
-      icon, description: `${statuses.length}`, children,
+      icon, description: `${statuses.length}`,
+      children: statuses.map(s => this.buildFileItem(s, repoRoot)),
     });
   }
 
   private buildFileItem(status: FileStatus, repoRoot: string): SGitItem {
-    const filename    = path.basename(status.filepath);
-    const dir         = path.dirname(status.filepath);
-    const fileUri     = vscode.Uri.file(path.join(repoRoot, status.filepath));
-    const label       = status.origPath ? `${path.basename(status.origPath)} → ${filename}` : filename;
-    const description = dir !== '.' ? dir : undefined;
-    const tooltip     = `${status.filepath}\n${statusLabel(status.xy)}\nDouble-click to open diff`;
+    const filename = path.basename(status.filepath);
+    const dir      = path.dirname(status.filepath);
+    const fileUri  = vscode.Uri.file(path.join(repoRoot, status.filepath));
+    const label    = status.origPath ? `${path.basename(status.origPath)} → ${filename}` : filename;
 
     return new SGitItem(label, vscode.TreeItemCollapsibleState.None, 'file', {
       icon: statusIcon(status.xy),
-      description,
-      tooltip,
+      description: dir !== '.' ? dir : undefined,
+      tooltip: `${status.filepath}\n${statusLabel(status.xy)}\nDouble-click to open in Beyond Compare`,
       resourceUri: fileUri,
       fileStatus: { ...status, repoRoot },
-      command: {
-        command: 'sgit.handleFileClick',
-        title: 'Open',
-        arguments: [{ ...status, repoRoot }],
-      },
+      command: { command: 'sgit.handleFileClick', title: 'Open', arguments: [{ ...status, repoRoot }] },
     });
   }
 
@@ -511,9 +222,6 @@ function statusLabel(xy: string): string {
     'M ': 'Staged modified',  'A ': 'Staged added',   'D ': 'Staged deleted',
     'R ': 'Staged renamed',   'C ': 'Staged copied',
     ' M': 'Modified',         ' D': 'Deleted',         'MM': 'Staged & modified',
-    'DD': 'Unmerged — both deleted',
-    'AA': 'Unmerged — both added',
-    'UU': 'Unmerged — both modified',
   };
   return map[xy] ?? `Changed (${xy})`;
 }
@@ -538,38 +246,35 @@ export function activate(context: vscode.ExtensionContext): void {
     showCollapseAll: true,
   });
 
-  // Double-click detection (command fires on every click)
+  // Double-click detection
   const clickTracker = new Map<string, number>();
-
   const handleClickCmd = vscode.commands.registerCommand(
     'sgit.handleFileClick',
     async (status: FileStatus) => {
-      const id  = `${status.repoRoot}:${status.filepath}`;
-      const now = Date.now();
+      const id   = `${status.repoRoot}:${status.filepath}`;
+      const now  = Date.now();
       const last = clickTracker.get(id) ?? 0;
-
       if (now - last < DOUBLE_CLICK_MS) {
         clickTracker.delete(id);
-        await openDiff(status);
+        await openInBeyondCompare(status);
       } else {
         clickTracker.set(id, now);
       }
     }
   );
 
-  const refreshCmd = vscode.commands.registerCommand('sgit.refresh', () => provider.refresh());
+  const refreshCmd  = vscode.commands.registerCommand('sgit.refresh', () => provider.refresh());
 
   const openDiffCmd = vscode.commands.registerCommand('sgit.openDiff', async (item?: SGitItem) => {
-    const status = item?.fileStatus ?? view.selection[0]?.fileStatus;
-    if (status) { await openDiff(status); }
+    const s = item?.fileStatus ?? view.selection[0]?.fileStatus;
+    if (s) { await openInBeyondCompare(s); }
   });
 
   const openFileCmd = vscode.commands.registerCommand('sgit.openFile', async (item?: SGitItem) => {
-    const status = item?.fileStatus ?? view.selection[0]?.fileStatus;
-    if (status) {
-      await vscode.commands.executeCommand(
-        'vscode.open', vscode.Uri.file(path.join(status.repoRoot, status.filepath))
-      );
+    const s = item?.fileStatus ?? view.selection[0]?.fileStatus;
+    if (s) {
+      await vscode.commands.executeCommand('vscode.open',
+        vscode.Uri.file(path.join(s.repoRoot, s.filepath)));
     }
   });
 
