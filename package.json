@@ -38,7 +38,31 @@
       },
       {
         "command": "sgit.openDiff",
-        "title": "Open Diff"
+        "title": "SGit: Open Diff",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "sgit.openFile",
+        "title": "SGit: Open File",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "sgit.handleFileClick",
+        "title": "SGit: Handle Click"
+      },
+      {
+        "command": "sgit.openDiffExplorer",
+        "title": "Diff with HEAD"
+      },
+      {
+        "command": "sgit.diffWithBranch",
+        "title": "Diff with..."
+      }
+    ],
+    "submenus": [
+      {
+        "id": "sgit.submenu",
+        "label": "SGit"
       }
     ],
     "menus": {
@@ -48,13 +72,44 @@
           "when": "view == sgitChangedFiles",
           "group": "navigation"
         }
+      ],
+      "explorer/context": [
+        {
+          "submenu": "sgit.submenu",
+          "when": "!explorerResourceIsFolder && resourceScheme == 'file'",
+          "group": "navigation@99"
+        }
+      ],
+      "sgit.submenu": [
+        {
+          "command": "sgit.diffWithBranch",
+          "group": "1@1"
+        },
+        {
+          "command": "sgit.openDiffExplorer",
+          "group": "1@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sgit.openDiff",
+          "when": "view == sgitChangedFiles && viewItem == file",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sgit.openFile",
+          "when": "view == sgitChangedFiles && viewItem == file",
+          "group": "navigation@2"
+        }
       ]
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "pack": "npx @vscode/vsce package --allow-missing-repository",
+    "install-ext": "npm run pack && cursor --install-extension sgit-0.1.0.vsix"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

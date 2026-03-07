@@ -1,12 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-     stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Document body -->
-  <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
-  <!-- Folded corner -->
-  <polyline points="13 2 13 9 20 9"/>
-  <!-- Change lines (like a diff) -->
-  <line x1="8" y1="13" x2="16" y2="13"/>
-  <line x1="8" y1="17" x2="13" y2="17"/>
-  <!-- Small filled dot = "changed" indicator -->
-  <circle cx="19.5" cy="19.5" r="2.5" fill="currentColor" stroke="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+  <!-- Document shape (filled) -->
+  <path fill-rule="evenodd" clip-rule="evenodd"
+    d="M4 4a2 2 0 0 1 2-2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4zm2 0v16h12V9h-5a1 1 0 0 1-1-1V4H6zm7 0v3h3l-3-3z"
+  />
+  <!-- Change lines with a "diff" feel -->
+  <rect x="7" y="11.5" width="6" height="1.2" rx="0.6"/>
+  <rect x="7" y="14"   width="4" height="1.2" rx="0.6"/>
+  <!-- Bold "+" badge bottom-right — signals "changes" -->
+  <circle cx="17.5" cy="17.5" r="4" fill="currentColor"/>
+  <rect x="16.8" y="14.8" width="1.4" height="5.4" rx="0.7" fill="white" opacity="0.9"/>
+  <rect x="14.8" y="16.8" width="5.4" height="1.4" rx="0.7" fill="white" opacity="0.9"/>
 </svg>
