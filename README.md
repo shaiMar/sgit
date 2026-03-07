@@ -8,10 +8,13 @@ A VS Code / Cursor extension that adds a sidebar panel showing all **tracked git
 
 - **Activity bar icon** — click the SGit icon in the left sidebar to open the panel
 - **Live file list** — shows staged changes and unstaged changes, auto-refreshes on save and git events
-- **Double-click** a file → opens it in **Beyond Compare** (HEAD vs working tree)
-- **Right-click** a file → context menu with:
-  - Open Diff (Beyond Compare)
+- **Double-click** a file in the panel → opens it in **Beyond Compare** (HEAD vs working tree)
+- **Right-click** a file in the panel → context menu with:
+  - Open Diff (Beyond Compare vs HEAD)
   - Open File
+- **Right-click any file in the Explorer** → **SGit** submenu:
+  - **Diff with...** — pick any local or remote branch from a dropdown, opens Beyond Compare
+  - **Diff with HEAD** — opens Beyond Compare comparing HEAD vs working tree
 - **Manual refresh** button (↺) in the panel title bar
 
 ---
@@ -54,20 +57,29 @@ Open the folder in VS Code / Cursor and press **F5** to launch the Extension Dev
 ### Install permanently
 
 ```bash
+git clone git@github.com:shaiMar/sgit.git
+cd sgit
 npm install
 
-# Build the .vsix package
+# Build a .vsix installable package
 npm run pack
+# → produces sgit-0.1.0.vsix in the project root
 
-# Build + install into Cursor in one step
+# OR: build + install into Cursor in one step
 npm run install-ext
+# → runs pack, then: cursor --install-extension sgit-0.1.0.vsix
 ```
 
-Then reload the window (`Cmd+Shift+P` → `Reload Window`).
+After installing, reload the window (`Cmd+Shift+P` → `Reload Window`).
 
----
-shai
-Remote: `git@github.com:shaiMar/sgit.git`
+### Scripts reference
+
+| Script | What it does |
+|---|---|
+| `npm run compile` | One-time TypeScript compile |
+| `npm run watch` | Continuous TypeScript compile (used with F5) |
+| `npm run pack` | Package into `sgit-0.1.0.vsix` |
+| `npm run install-ext` | Pack **and** install into Cursor |
 
 ---
 
