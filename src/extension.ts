@@ -56,6 +56,32 @@ async function openInBeyondCompare(status: FileStatus): Promise<void> {
   cp.spawn(bcomp, [tmpFile, workingFile], { detached: true, stdio: 'ignore' }).unref();
 }
 
+function run(cmd: string, cwd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    cp.exec(cmd, { cwd, maxBuffer: 5 * 1024 * 1024 }, (err, out) =>
+      err ? reject(err) : resolve(out)
+    );
+  });
+}
+
+function findRepoRoot(filePath: string): Promise<string | null> {
+  const dir = fs.statSync(filePath).isDirectory() ? filePath : path.dirname(filePath);
+  return new Promise(resolve => {
+    cp.exec('git rev-parse --show-toplevel', { cwd: dir }, (err, out) =>
+      resolve(err ? null : out.trim())
+    );
+  });
+}
+
+function getFileXY(repoRoot: string, relative: string): Promise<string | null> {
+  return new Promise(resolve => {
+    cp.exec(`git status --porcelain -- "${relative}"`, { cwd: repoRoot }, (err, out) => {
+      if (err || !out.trim()) { resolve(null); return; }
+      resolve(out.slice(0, 2));   // first two chars are the XY code
+    });
+  });
+}
+
 function gitShow(repoRoot: string, ref: string): Promise<string> {
   return new Promise((resolve, reject) => {
     cp.exec(`git show "${ref}"`, { cwd: repoRoot, maxBuffer: 20 * 1024 * 1024 }, (err, out) =>
@@ -265,6 +291,77 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const refreshCmd  = vscode.commands.registerCommand('sgit.refresh', () => provider.refresh());
 
+  // Right-click in Explorer → Open in Beyond Compare
+  const openDiffExplorerCmd = vscode.commands.registerCommand(
+    'sgit.openDiffExplorer',
+    async (uri: vscode.Uri) => {
+      if (!uri) { return; }
+      const filePath  = uri.fsPath;
+      const repoRoot  = await findRepoRoot(filePath);
+      if (!repoRoot) {
+        vscode.window.showErrorMessage('SGit: file is not inside a git repository.');
+        return;
+      }
+      const relative = path.relative(repoRoot, filePath).replace(/\\/g, '/');
+      // Detect git status for this specific file
+      const xy = await getFileXY(repoRoot, relative);
+      if (!xy) {
+        vscode.window.showInformationMessage('SGit: no git changes detected for this file.');
+        return;
+      }
+      await openInBeyondCompare({ xy, filepath: relative, repoRoot });
+    }
+  );
+
+  // Explorer right-click → SGit → Diff with... (branch picker)
+  const diffWithBranchCmd = vscode.commands.registerCommand(
+    'sgit.diffWithBranch',
+    async (uri: vscode.Uri) => {
+      if (!uri) { return; }
+      const filePath = uri.fsPath;
+      const repoRoot = await findRepoRoot(filePath);
+      if (!repoRoot) {
+        vscode.window.showErrorMessage('SGit: file is not inside a git repository.');
+        return;
+      }
+
+      const bcomp = findBeyondCompare();
+      if (!bcomp) {
+        vscode.window.showErrorMessage('SGit: Beyond Compare not found.');
+        return;
+      }
+
+      // Fetch all local + remote branches sorted by most recent
+      const branchOut = await run(
+        'git branch -a --format="%(refname:short)" --sort=-committerdate',
+        repoRoot
+      ).catch(() => '');
+
+      const branches = branchOut.trim().split('\n').filter(Boolean);
+      if (!branches.length) {
+        vscode.window.showErrorMessage('SGit: no branches found.');
+        return;
+      }
+
+      const pick = await vscode.window.showQuickPick(branches, {
+        title: 'SGit — Diff with branch',
+        placeHolder: `Select a branch to compare against ${path.basename(filePath)}`,
+        matchOnDescription: true,
+      });
+      if (!pick) { return; }
+
+      const relative = path.relative(repoRoot, filePath).replace(/\\/g, '/');
+      const branchContent = await gitShow(repoRoot, `${pick}:${relative}`).catch(() => '');
+      const tmpFile = path.join(
+        os.tmpdir(),
+        `sgit_${pick.replace(/[\\/]/g, '_')}_${path.basename(filePath)}`
+      );
+      fs.writeFileSync(tmpFile, branchContent);
+
+      cp.spawn(bcomp, [tmpFile, filePath], { detached: true, stdio: 'ignore' }).unref();
+    }
+  );
+
   const openDiffCmd = vscode.commands.registerCommand('sgit.openDiff', async (item?: SGitItem) => {
     const s = item?.fileStatus ?? view.selection[0]?.fileStatus;
     if (s) { await openInBeyondCompare(s); }
@@ -288,7 +385,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const onSave = vscode.workspace.onDidSaveTextDocument(() => provider.refresh());
 
   context.subscriptions.push(
-    view, handleClickCmd, refreshCmd, openDiffCmd, openFileCmd, gitWatcher, onSave
+    view, handleClickCmd, refreshCmd, diffWithBranchCmd, openDiffCmd, openFileCmd, openDiffExplorerCmd, gitWatcher, onSave
   );
 }
 

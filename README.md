@@ -66,7 +66,7 @@ npm run install-ext
 Then reload the window (`Cmd+Shift+P` → `Reload Window`).
 
 ---
-
+shai
 Remote: `git@github.com:shaiMar/sgit.git`
 
 ---

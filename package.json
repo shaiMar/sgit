@@ -49,6 +49,20 @@
       {
         "command": "sgit.handleFileClick",
         "title": "SGit: Handle Click"
+      },
+      {
+        "command": "sgit.openDiffExplorer",
+        "title": "Diff with HEAD"
+      },
+      {
+        "command": "sgit.diffWithBranch",
+        "title": "Diff with..."
+      }
+    ],
+    "submenus": [
+      {
+        "id": "sgit.submenu",
+        "label": "SGit"
       }
     ],
     "menus": {
@@ -57,6 +71,23 @@
           "command": "sgit.refresh",
           "when": "view == sgitChangedFiles",
           "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "submenu": "sgit.submenu",
+          "when": "!explorerResourceIsFolder && resourceScheme == 'file'",
+          "group": "navigation@99"
+        }
+      ],
+      "sgit.submenu": [
+        {
+          "command": "sgit.diffWithBranch",
+          "group": "1@1"
+        },
+        {
+          "command": "sgit.openDiffExplorer",
+          "group": "1@2"
         }
       ],
       "view/item/context": [
