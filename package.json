@@ -102,6 +102,16 @@
           "group": "navigation@2"
         }
       ]
+    },
+    "configuration": {
+      "title": "SGit",
+      "properties": {
+        "sgit.beyondComparePath": {
+          "type": "string",
+          "default": "",
+          "description": "Full path to the Beyond Compare executable (bcomp or BCompare.exe). Leave empty to auto-detect."
+        }
+      }
     }
   },
   "scripts": {

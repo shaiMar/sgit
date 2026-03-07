@@ -18,14 +18,35 @@ type GroupKind = 'staged' | 'changes' | 'message' | 'repo';
 // ─── Beyond Compare launcher ──────────────────────────────────────────────────
 
 const BC_CANDIDATES = [
+  // macOS
   '/usr/local/bin/bcomp',
   '/usr/bin/bcomp',
+  '/opt/homebrew/bin/bcomp',
   '/Applications/Beyond Compare.app/Contents/MacOS/bcomp',
   '/Applications/Beyond Compare 5.app/Contents/MacOS/bcomp',
   '/Applications/Beyond Compare 4.app/Contents/MacOS/bcomp',
+  // Windows
+  'C:\\Program Files\\Beyond Compare 5\\BCompare.exe',
+  'C:\\Program Files\\Beyond Compare 4\\BCompare.exe',
+  'C:\\Program Files (x86)\\Beyond Compare 4\\BCompare.exe',
+  // Linux
+  '/usr/bin/bcompare',
+  '/usr/local/bin/bcompare',
 ];
 
 function findBeyondCompare(): string | null {
+  // 1. User-configured path takes priority
+  const configured = vscode.workspace.getConfiguration('sgit').get<string>('beyondComparePath', '').trim();
+  if (configured && fs.existsSync(configured)) { return configured; }
+
+  // 2. Let the shell locate it
+  try {
+    const whichCmd = process.platform === 'win32' ? 'where bcomp' : 'which bcomp';
+    const found = cp.execSync(whichCmd, { encoding: 'utf8' }).trim().split('\n')[0];
+    if (found && fs.existsSync(found)) { return found; }
+  } catch { /* not on PATH */ }
+
+  // 3. Well-known install locations
   for (const p of BC_CANDIDATES) {
     if (fs.existsSync(p)) { return p; }
   }
@@ -35,10 +56,13 @@ function findBeyondCompare(): string | null {
 async function openInBeyondCompare(status: FileStatus): Promise<void> {
   const bcomp = findBeyondCompare();
   if (!bcomp) {
-    vscode.window.showErrorMessage(
-      'Beyond Compare not found. Install it and make sure `bcomp` is available at one of: ' +
-      BC_CANDIDATES.join(', ')
+    const action = await vscode.window.showErrorMessage(
+      'SGit: Beyond Compare not found. Set the path in Settings → sgit.beyondComparePath',
+      'Open Settings'
     );
+    if (action === 'Open Settings') {
+      vscode.commands.executeCommand('workbench.action.openSettings', 'sgit.beyondComparePath');
+    }
     return;
   }
 
@@ -327,7 +351,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
       const bcomp = findBeyondCompare();
       if (!bcomp) {
-        vscode.window.showErrorMessage('SGit: Beyond Compare not found.');
+        const action = await vscode.window.showErrorMessage(
+          'SGit: Beyond Compare not found. Set the path in Settings → sgit.beyondComparePath',
+          'Open Settings'
+        );
+        if (action === 'Open Settings') {
+          vscode.commands.executeCommand('workbench.action.openSettings', 'sgit.beyondComparePath');
+        }
         return;
       }
 
