@@ -8,7 +8,6 @@
     "vscode": "^1.85.0"
   },
   "categories": ["SCM Providers"],
-  "icon": "resources/sgit-icon.png",
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
@@ -38,7 +37,17 @@
       },
       {
         "command": "sgit.openDiff",
-        "title": "Open Diff"
+        "title": "SGit: Open Diff",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "sgit.openFile",
+        "title": "SGit: Open File",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "sgit.handleFileClick",
+        "title": "SGit: Handle Click"
       }
     ],
     "menus": {
@@ -47,6 +56,18 @@
           "command": "sgit.refresh",
           "when": "view == sgitChangedFiles",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sgit.openDiff",
+          "when": "view == sgitChangedFiles && viewItem == file",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sgit.openFile",
+          "when": "view == sgitChangedFiles && viewItem == file",
+          "group": "navigation@2"
         }
       ]
     }
