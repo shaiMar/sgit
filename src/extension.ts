@@ -15,6 +15,37 @@ interface FileStatus {
 
 type GroupKind = 'staged' | 'changes' | 'message' | 'repo';
 
+// ─── VS Code diff content provider ───────────────────────────────────────────
+
+const headContentMap = new Map<string, string>();
+
+const sgitContentProvider: vscode.TextDocumentContentProvider = {
+  provideTextDocumentContent(uri: vscode.Uri): string {
+    return headContentMap.get(uri.toString()) ?? '';
+  },
+};
+
+function makeHeadUri(filename: string, ref: string, content: string): vscode.Uri {
+  // encode ref in the path so VS Code shows a meaningful tab title
+  const safe = ref.replace(/[^a-zA-Z0-9._\-]/g, '_');
+  const uri  = vscode.Uri.parse(`sgit-head:/${safe}/${filename}`);
+  headContentMap.set(uri.toString(), content);
+  return uri;
+}
+
+async function openVscodeDiff(
+  leftContent: string, leftRef: string,
+  rightUri: vscode.Uri, filename: string
+): Promise<void> {
+  const leftUri = makeHeadUri(filename, leftRef, leftContent);
+  await vscode.commands.executeCommand(
+    'vscode.diff',
+    leftUri, rightUri,
+    `${filename}: ${leftRef} ↔ Working Tree`,
+    { preview: true }
+  );
+}
+
 // ─── Beyond Compare launcher ──────────────────────────────────────────────────
 
 const BC_CANDIDATES = [
@@ -53,30 +84,38 @@ function findBeyondCompare(): string | null {
   return null;
 }
 
-async function openInBeyondCompare(status: FileStatus): Promise<void> {
-  const bcomp = findBeyondCompare();
-  if (!bcomp) {
-    const action = await vscode.window.showErrorMessage(
-      'SGit: Beyond Compare not found. Set the path in Settings → sgit.beyondComparePath',
-      'Open Settings'
-    );
-    if (action === 'Open Settings') {
-      vscode.commands.executeCommand('workbench.action.openSettings', 'sgit.beyondComparePath');
-    }
+async function openDiff(status: FileStatus): Promise<void> {
+  const { xy, filepath, repoRoot } = status;
+  const filename    = path.basename(filepath);
+  const isStaged    = xy[0] !== ' ' && xy[0] !== '?';
+  const ref         = isStaged ? `:${filepath}` : `HEAD:${filepath}`;
+  const refLabel    = isStaged ? 'INDEX' : 'HEAD';
+  const workingFile = path.join(repoRoot, filepath);
+  const headContent = await gitShow(repoRoot, ref).catch(() => '');
+
+  // Remote context (SSH / WSL / Dev Container) → VS Code built-in diff
+  if (vscode.env.remoteName) {
+    await openVscodeDiff(headContent, refLabel, vscode.Uri.file(workingFile), filename);
     return;
   }
 
-  const { xy, filepath, repoRoot } = status;
-  const filename  = path.basename(filepath);
-  const isStaged  = xy[0] !== ' ' && xy[0] !== '?';
-  const workingFile = path.join(repoRoot, filepath);
+  // Local → Beyond Compare; fall back to VS Code diff if BC not found
+  const bcomp = findBeyondCompare();
+  if (!bcomp) {
+    await openVscodeDiff(headContent, refLabel, vscode.Uri.file(workingFile), filename);
+    vscode.window.showWarningMessage(
+      'SGit: Beyond Compare not found — showing VS Code diff instead. Set sgit.beyondComparePath to use BC.',
+      'Open Settings'
+    ).then(a => {
+      if (a === 'Open Settings') {
+        vscode.commands.executeCommand('workbench.action.openSettings', 'sgit.beyondComparePath');
+      }
+    });
+    return;
+  }
 
-  // Save HEAD content to a temp file so Beyond Compare can open it
-  const headContent = await gitShow(repoRoot, isStaged ? `:${filepath}` : `HEAD:${filepath}`);
-  const tmpFile     = path.join(os.tmpdir(), `sgit_HEAD_${filename}`);
+  const tmpFile = path.join(os.tmpdir(), `sgit_HEAD_${filename}`);
   fs.writeFileSync(tmpFile, headContent);
-
-  // Beyond Compare: left = HEAD (or index), right = working tree
   cp.spawn(bcomp, [tmpFile, workingFile], { detached: true, stdio: 'ignore' }).unref();
 }
 
@@ -216,7 +255,7 @@ class SGitProvider implements vscode.TreeDataProvider<SGitItem> {
     return new SGitItem(label, vscode.TreeItemCollapsibleState.None, 'file', {
       icon: statusIcon(status.xy),
       description: dir !== '.' ? dir : undefined,
-      tooltip: `${status.filepath}\n${statusLabel(status.xy)}\nDouble-click to open in Beyond Compare`,
+      tooltip: `${status.filepath}\n${statusLabel(status.xy)}\nDouble-click to diff`,
       resourceUri: fileUri,
       fileStatus: { ...status, repoRoot },
       command: { command: 'sgit.handleFileClick', title: 'Open', arguments: [{ ...status, repoRoot }] },
@@ -289,6 +328,10 @@ function statusIcon(xy: string): string {
 const DOUBLE_CLICK_MS = 400;
 
 export function activate(context: vscode.ExtensionContext): void {
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider('sgit-head', sgitContentProvider)
+  );
+
   const provider = new SGitProvider();
 
   const view = vscode.window.createTreeView('sgitChangedFiles', {
@@ -306,7 +349,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const last = clickTracker.get(id) ?? 0;
       if (now - last < DOUBLE_CLICK_MS) {
         clickTracker.delete(id);
-        await openInBeyondCompare(status);
+        await openDiff(status);
       } else {
         clickTracker.set(id, now);
       }
@@ -333,7 +376,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.showInformationMessage('SGit: no git changes detected for this file.');
         return;
       }
-      await openInBeyondCompare({ xy, filepath: relative, repoRoot });
+      await openDiff({ xy, filepath: relative, repoRoot });
     }
   );
 
@@ -346,18 +389,6 @@ export function activate(context: vscode.ExtensionContext): void {
       const repoRoot = await findRepoRoot(filePath);
       if (!repoRoot) {
         vscode.window.showErrorMessage('SGit: file is not inside a git repository.');
-        return;
-      }
-
-      const bcomp = findBeyondCompare();
-      if (!bcomp) {
-        const action = await vscode.window.showErrorMessage(
-          'SGit: Beyond Compare not found. Set the path in Settings → sgit.beyondComparePath',
-          'Open Settings'
-        );
-        if (action === 'Open Settings') {
-          vscode.commands.executeCommand('workbench.action.openSettings', 'sgit.beyondComparePath');
-        }
         return;
       }
 
@@ -380,21 +411,34 @@ export function activate(context: vscode.ExtensionContext): void {
       });
       if (!pick) { return; }
 
-      const relative = path.relative(repoRoot, filePath).replace(/\\/g, '/');
+      const relative      = path.relative(repoRoot, filePath).replace(/\\/g, '/');
       const branchContent = await gitShow(repoRoot, `${pick}:${relative}`).catch(() => '');
+      const filename      = path.basename(filePath);
+
+      // Remote → VS Code diff; local → Beyond Compare (fall back to VS Code diff if BC absent)
+      if (vscode.env.remoteName) {
+        await openVscodeDiff(branchContent, pick, vscode.Uri.file(filePath), filename);
+        return;
+      }
+
+      const bcomp = findBeyondCompare();
+      if (!bcomp) {
+        await openVscodeDiff(branchContent, pick, vscode.Uri.file(filePath), filename);
+        return;
+      }
+
       const tmpFile = path.join(
         os.tmpdir(),
-        `sgit_${pick.replace(/[\\/]/g, '_')}_${path.basename(filePath)}`
+        `sgit_${pick.replace(/[\\/]/g, '_')}_${filename}`
       );
       fs.writeFileSync(tmpFile, branchContent);
-
       cp.spawn(bcomp, [tmpFile, filePath], { detached: true, stdio: 'ignore' }).unref();
     }
   );
 
   const openDiffCmd = vscode.commands.registerCommand('sgit.openDiff', async (item?: SGitItem) => {
     const s = item?.fileStatus ?? view.selection[0]?.fileStatus;
-    if (s) { await openInBeyondCompare(s); }
+    if (s) { await openDiff(s); }
   });
 
   const openFileCmd = vscode.commands.registerCommand('sgit.openFile', async (item?: SGitItem) => {
