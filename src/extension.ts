@@ -380,7 +380,49 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   );
 
-  // Explorer right-click → SGit → Diff with... (branch picker)
+  // ── Shared helper: open diff between a branch ref and the working-tree file ──
+
+  async function openDiffBranchVsFile(branch: string, relative: string, repoRoot: string): Promise<void> {
+    const filePath      = path.join(repoRoot, relative);
+    const filename      = path.basename(relative);
+    const branchContent = await gitShow(repoRoot, `${branch}:${relative}`).catch(() => '');
+
+    if (vscode.env.remoteName) {
+      await openVscodeDiff(branchContent, branch, vscode.Uri.file(filePath), filename);
+      return;
+    }
+
+    const bcomp = findBeyondCompare();
+    if (!bcomp) {
+      await openVscodeDiff(branchContent, branch, vscode.Uri.file(filePath), filename);
+      return;
+    }
+
+    const tmpFile = path.join(os.tmpdir(), `sgit_${branch.replace(/[\\/]/g, '_')}_${filename}`);
+    fs.writeFileSync(tmpFile, branchContent);
+    cp.spawn(bcomp, [tmpFile, filePath], { detached: true, stdio: 'ignore' }).unref();
+  }
+
+  // ── Helper: fetch sorted branches ────────────────────────────────────────────
+
+  async function pickBranch(repoRoot: string, placeholder: string): Promise<string | undefined> {
+    const branchOut = await run(
+      'git branch -a --format="%(refname:short)" --sort=-committerdate',
+      repoRoot
+    ).catch(() => '');
+    const branches = branchOut.trim().split('\n').filter(Boolean);
+    if (!branches.length) {
+      vscode.window.showErrorMessage('SGit: no branches found.');
+      return undefined;
+    }
+    return vscode.window.showQuickPick(branches, {
+      title: 'SGit — Diff with branch',
+      placeHolder: placeholder,
+      matchOnDescription: true,
+    });
+  }
+
+  // Explorer right-click → SGit → Diff with... (branch picker) — FILE
   const diffWithBranchCmd = vscode.commands.registerCommand(
     'sgit.diffWithBranch',
     async (uri: vscode.Uri) => {
@@ -391,48 +433,62 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.showErrorMessage('SGit: file is not inside a git repository.');
         return;
       }
+      const branch = await pickBranch(repoRoot, `Select a branch to compare against ${path.basename(filePath)}`);
+      if (!branch) { return; }
+      const relative = path.relative(repoRoot, filePath).replace(/\\/g, '/');
+      await openDiffBranchVsFile(branch, relative, repoRoot);
+    }
+  );
 
-      // Fetch all local + remote branches sorted by most recent
-      const branchOut = await run(
-        'git branch -a --format="%(refname:short)" --sort=-committerdate',
+  // Explorer right-click → SGit → Diff with... (branch picker) — FOLDER
+  const diffFolderWithBranchCmd = vscode.commands.registerCommand(
+    'sgit.diffFolderWithBranch',
+    async (uri: vscode.Uri) => {
+      if (!uri) { return; }
+      const folderPath = uri.fsPath;
+      const repoRoot   = await findRepoRoot(folderPath);
+      if (!repoRoot) {
+        vscode.window.showErrorMessage('SGit: folder is not inside a git repository.');
+        return;
+      }
+
+      const branch = await pickBranch(repoRoot, 'Select a branch to compare this folder against');
+      if (!branch) { return; }
+
+      // Files that differ between the branch and the working tree, scoped to this folder
+      const relFolder  = path.relative(repoRoot, folderPath).replace(/\\/g, '/');
+      const pathScope  = relFolder ? `"${relFolder}/"` : '.';
+      const diffOut    = await run(
+        `git diff --name-only "${branch}" -- ${pathScope}`,
         repoRoot
       ).catch(() => '');
+      const diffFiles  = diffOut.trim().split('\n').filter(Boolean);
 
-      const branches = branchOut.trim().split('\n').filter(Boolean);
-      if (!branches.length) {
-        vscode.window.showErrorMessage('SGit: no branches found.');
+      if (!diffFiles.length) {
+        vscode.window.showInformationMessage(
+          `SGit: no differences found between "${branch}" and working tree in this folder.`
+        );
         return;
       }
 
-      const pick = await vscode.window.showQuickPick(branches, {
-        title: 'SGit — Diff with branch',
-        placeHolder: `Select a branch to compare against ${path.basename(filePath)}`,
-        matchOnDescription: true,
+      // Persistent QuickPick — selecting a file opens its diff but keeps the list open
+      const qp         = vscode.window.createQuickPick();
+      qp.title         = `SGit — ${diffFiles.length} file${diffFiles.length !== 1 ? 's' : ''} differ from ${branch}`;
+      qp.placeholder   = 'Select a file to open its diff (picker stays open)';
+      qp.matchOnDetail = true;
+      qp.items         = diffFiles.map(f => ({
+        label:  path.basename(f),
+        detail: f,
+        description: path.dirname(f) !== '.' ? path.dirname(f) : undefined,
+      }));
+
+      qp.onDidAccept(async () => {
+        const sel = qp.selectedItems[0];
+        if (!sel) { return; }
+        await openDiffBranchVsFile(branch, (sel as vscode.QuickPickItem & { detail: string }).detail, repoRoot);
       });
-      if (!pick) { return; }
 
-      const relative      = path.relative(repoRoot, filePath).replace(/\\/g, '/');
-      const branchContent = await gitShow(repoRoot, `${pick}:${relative}`).catch(() => '');
-      const filename      = path.basename(filePath);
-
-      // Remote → VS Code diff; local → Beyond Compare (fall back to VS Code diff if BC absent)
-      if (vscode.env.remoteName) {
-        await openVscodeDiff(branchContent, pick, vscode.Uri.file(filePath), filename);
-        return;
-      }
-
-      const bcomp = findBeyondCompare();
-      if (!bcomp) {
-        await openVscodeDiff(branchContent, pick, vscode.Uri.file(filePath), filename);
-        return;
-      }
-
-      const tmpFile = path.join(
-        os.tmpdir(),
-        `sgit_${pick.replace(/[\\/]/g, '_')}_${filename}`
-      );
-      fs.writeFileSync(tmpFile, branchContent);
-      cp.spawn(bcomp, [tmpFile, filePath], { detached: true, stdio: 'ignore' }).unref();
+      qp.show();
     }
   );
 
@@ -449,18 +505,25 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
-  const gitWatcher = vscode.workspace.createFileSystemWatcher(
-    '**/.git/{index,HEAD,COMMIT_EDITMSG,ORIG_HEAD}'
-  );
-  gitWatcher.onDidChange(() => provider.refresh());
-  gitWatcher.onDidCreate(() => provider.refresh());
-  gitWatcher.onDidDelete(() => provider.refresh());
-
+  // Build absolute-path watchers for every repo root's .git folder.
+  // A workspace-relative glob like '**/.git/...' misses repos whose .git lives
+  // above the workspace folder (e.g. workspace = xSA/backend, git root = xSA/).
   const onSave = vscode.workspace.onDidSaveTextDocument(() => provider.refresh());
+  context.subscriptions.push(view, handleClickCmd, refreshCmd, diffWithBranchCmd,
+    diffFolderWithBranchCmd, openDiffCmd, openFileCmd, openDiffExplorerCmd, onSave);
 
-  context.subscriptions.push(
-    view, handleClickCmd, refreshCmd, diffWithBranchCmd, openDiffCmd, openFileCmd, openDiffExplorerCmd, gitWatcher, onSave
-  );
+  const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+  Promise.all(workspaceFolders.map(f => findRepoRoot(f.uri.fsPath))).then(roots => {
+    const validRoots = [...new Set(roots.filter(Boolean) as string[])];
+    for (const root of validRoots) {
+      const pattern = new vscode.RelativePattern(root, '.git/{index,HEAD,COMMIT_EDITMSG,ORIG_HEAD}');
+      const w = vscode.workspace.createFileSystemWatcher(pattern);
+      w.onDidChange(() => provider.refresh());
+      w.onDidCreate(() => provider.refresh());
+      w.onDidDelete(() => provider.refresh());
+      context.subscriptions.push(w);
+    }
+  });
 }
 
 export function deactivate(): void {}

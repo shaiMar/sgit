@@ -57,6 +57,10 @@
       {
         "command": "sgit.diffWithBranch",
         "title": "Diff with..."
+      },
+      {
+        "command": "sgit.diffFolderWithBranch",
+        "title": "Diff with..."
       }
     ],
     "submenus": [
@@ -76,17 +80,24 @@
       "explorer/context": [
         {
           "submenu": "sgit.submenu",
-          "when": "!explorerResourceIsFolder && resourceScheme == 'file'",
+          "when": "resourceScheme == 'file'",
           "group": "navigation@99"
         }
       ],
       "sgit.submenu": [
         {
+          "command": "sgit.diffFolderWithBranch",
+          "when": "explorerResourceIsFolder",
+          "group": "1@1"
+        },
+        {
           "command": "sgit.diffWithBranch",
+          "when": "!explorerResourceIsFolder",
           "group": "1@1"
         },
         {
           "command": "sgit.openDiffExplorer",
+          "when": "!explorerResourceIsFolder",
           "group": "1@2"
         }
       ],

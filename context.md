@@ -8,12 +8,14 @@ A VS Code extension that adds a sidebar panel showing all **tracked git-changed 
 ### Entry point
 `src/extension.ts` — single file, activated on startup.
 
-### Key classes
-| Class | Role |
+### Key classes / helpers
+| Class / function | Role |
 |---|---|
 | `SGitProvider` | `TreeDataProvider` — builds and refreshes the file tree |
 | `SGitItem` | `TreeItem` subclass — represents a repo, group, file, or message node |
-| `GitContentProvider` | `TextDocumentContentProvider` — serves git HEAD/Index content for the diff panel |
+| `sgitContentProvider` | `TextDocumentContentProvider` — serves git HEAD/Index content for the VS Code diff panel |
+| `openDiffBranchVsFile` | Shared helper — given a branch name + relative path, opens BC or VS Code diff |
+| `pickBranch` | Shared helper — shows a QuickPick of all branches sorted by recency |
 
 ### Tree structure
 ```
@@ -35,7 +37,7 @@ Uses git's two-character porcelain `XY` format:
   - Staged file → HEAD vs Index (`git show :filepath`)
   - Unstaged file → HEAD vs Working Tree
   - Implemented via `vscode.commands.executeCommand('vscode.diff', ...)`
-  - Left side uses the custom URI scheme `sgit-diff://` served by `GitContentProvider`
+  - Left side uses the custom URI scheme `sgit-head://` served by `sgitContentProvider`
 
 ## Auto-refresh triggers
 1. `.git/index`, `.git/HEAD`, `.git/COMMIT_EDITMSG`, `.git/ORIG_HEAD` change (covers stage/commit/checkout)
@@ -49,6 +51,9 @@ Uses git's two-character porcelain `XY` format:
 | Double-click file | Opens **DP** (diff panel) |
 | Right-click file → Open Diff | Opens **DP** |
 | Right-click file → Open File | Opens file in editor |
+| Explorer right-click file → SGit → Diff with... | Branch picker → Beyond Compare (file vs branch) |
+| Explorer right-click file → SGit → Diff with HEAD | Beyond Compare (HEAD vs working tree) |
+| Explorer right-click folder → SGit → Diff with... | Branch picker → persistent file list of changed files → click any to open Beyond Compare diff |
 
 ## Build & run
 ```bash

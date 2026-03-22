@@ -15,6 +15,8 @@ A VS Code / Cursor extension that adds a sidebar panel showing all **tracked git
 - **Right-click any file in the Explorer** → **SGit** submenu:
   - **Diff with...** — pick any local or remote branch from a dropdown, opens Beyond Compare
   - **Diff with HEAD** — opens Beyond Compare comparing HEAD vs working tree
+- **Right-click any folder in the Explorer** → **SGit** submenu:
+  - **Diff with...** — pick a branch; a persistent file list appears showing every file in that folder that differs from the chosen branch; click/Enter any file to open its diff in Beyond Compare (the list stays open so you can browse multiple files)
 - **Manual refresh** button (↺) in the panel title bar
 
 ---
